@@ -33,8 +33,7 @@ module Rx
 
       case path(env)
       when @options[:liveness_path]
-        ok = check_to_component(liveness_checks).map { |x| x[:status] == 200 }.all?
-        liveness_response(ok)
+        liveness_response(check_to_component(liveness_checks))
       when @options[:readiness_path]
         readiness_response(check_to_component(readiness_checks))
       when @options[:deep_path]
@@ -42,11 +41,10 @@ module Rx
           deep_response_authorization_failed
         else
           @cache.cache("deep") do
-            readiness = check_to_component(readiness_checks)
             critical  = check_to_component(deep_critical_checks)
             secondary = check_to_component(deep_secondary_checks)
 
-            deep_response(readiness, critical, secondary)
+            deep_response(critical, secondary)
           end
         end
       end
@@ -75,20 +73,36 @@ module Rx
     end
 
     def liveness_response(is_ok)
-      [is_ok ? 200 : 503, {}, []]
+      [
+        is_ok ? 200 : 500,
+        {"content-type" => "application/json"},
+        []
+      ]
     end
 
     def path(env)
       env["PATH_INFO"] || env["REQUEST_PATH"] || env["REQUEST_URI"]
     end
 
-    def readiness_response(components)
-      status = components.map { |x| x[:status] == 200 }.all? ? 200 : 503
+    def liveness_response(components)
+      status = components.all? { |x| x[x.keys.first][:alive] } ? 200 : 500
+      status_string = status == 200 ? "ok" : "error"
 
       [
         status,
         {"content-type" => "application/json"},
-        [JSON.dump({status: status, components: components})]
+        [JSON.dump({status: status_string, integrations: components})]
+      ]
+    end
+
+    def readiness_response(components)
+      status = components.all? { |x| x[x.keys.first][:alive] } ? 200 : 500
+      status_string = status == 200 ? "ok" : "error"
+
+      [
+        status,
+        {"content-type" => "application/json"},
+        [JSON.dump({status: status_string, integrations: components})]
       ]
     end
 
@@ -100,21 +114,26 @@ module Rx
       ]
     end
 
-    def deep_response(readiness, critical, secondary)
-      status = (readiness.map { |x| x[:status] == 200 } + critical.map { |x| x[:status] == 200 }).all? ? 200 : 503
+    def deep_response(critical, secondary)
+      status_critical = critical.all? { |x| x[x.keys.first][:alive] } ? 200 : 500
+      status_secondary = secondary.all? { |x| x[x.keys.first][:alive] } ? 200 : 500
+      status_string = status_critical == 200 ? "ok" : "error"
+      status_string = "degraded" if status_critical == 200 && status_secondary == 500
 
       [
-        status,
+        status_critical,
         {"content-type" => "application/json"},
-        [JSON.dump(status: status, readiness: readiness, critical: critical, secondary: secondary)]
+        [JSON.dump(status: status_string, integrations: critical + secondary)]
       ]
     end
 
     def check_to_component(check)
+      secondary_checks_names = deep_secondary_checks.to_a.map(&:name)
+
       Array(check)
         .map { |check| Rx::Concurrent::Future.execute { check.check } }
         .map(&:value)
-        .map { |r| { name: r.name, status: r.ok? ? 200 : 503, message: r.ok? ? "ok" : r.error, response_time_ms: r.timing } }
+        .map { |r| {r.name => { alive: r.ok? ? true : false, duration: r.timing, required: !secondary_checks_names.include?(r.name) } }}
     end
   end
 end
