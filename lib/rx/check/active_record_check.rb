@@ -13,7 +13,7 @@ module Rx
             raise StandardError.new("Undefined class ActiveRecord::Base")
           end
 
-          ActiveRecord::Base.connection.active?
+          ActiveRecord::Base.connection_pool.with_connection { |connection| connection.execute("SELECT 1") }.present?
         end
       end
 

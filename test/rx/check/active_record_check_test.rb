@@ -14,10 +14,8 @@ class ActiveRecordCheckTest < Minitest::Test
     @check.stub(:activerecord_defined?, true) do
       @check.class.const_set(:ActiveRecord, Module.new)
       Rx::Check::ActiveRecordCheck::ActiveRecord.const_set(:Base, Class.new do
-        def self.connection
-          mock = Minitest::Mock.new
-          mock.expect :active?, true
-          mock
+        def self.connection_pool
+          Minitest::Mock.new.expect(:with_connection, Minitest::Mock.new.expect(:present?, true))
         end
       end)
       assert @check.check.ok?
